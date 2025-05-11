@@ -1,55 +1,60 @@
-# Sign Language Recognition
+# Sign Language Recognition with Few-Shot Learning
 
-This mini-project provides **real-time recognition of American Sign Language (ASL) alphabet letters** from webcam input using deep learning models. It uses pre-trained versions of **EfficientNet-B0** and **ConvNeXt-Tiny**, fine-tuned on the [ASL Alphabet Dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet).
+This is my **mini-project to practice Computer Vision (CV), Machine Learning (ML), and Deep Learning (DL)**. It provides **real-time recognition of American Sign Language (ASL) alphabets** using **EfficientNet-B0** as the backbone.  
+The system supports **few-shot learning**, allowing users to define and recognize custom gestures with just 3–5 sample images.
 
-> Pre-trained weights are provided and no training is required.  
->  
-> This project was built as a hands-on exercise to strengthen my understanding of **Computer Vision** and **Deep Learning**, especially in the areas of **image classification**, **model fine-tuning**, and **real-time inference using webcam data**.
-
----
 ## Features
 
-- Recognizes 26 ASL letters (A–Z) from hand gesture images
-- Real-time prediction using a computer webcam
-- Supports two deep learning models:
-  - **EfficientNet-B0** (lightweight & fast)
-  - **ConvNeXt-Tiny** (SOTA)
-- User-friendly CLI for model selection
+- Recognition 26 ASL alphabets (A–Z)
+- Uses EfficientNet-B0 with PyTorch as the backbone for feature extraction
+- Few-shot learning capability, add new gestures without retraining
+- Hand detection and tracking with MediaPipe
+- Real-time recognition from webcam
 
----
 ## Getting Started
 
-### 1. Clone the repository
+### 1. Clone repository
 ```bash
-git clone https://github.com/lucasnhandang/Sign-Language-Recognition.git
+git clone https://github.com/yourusername/Sign-Language-Recognition.git
 cd Sign-Language-Recognition
 ```
 
 ### 2. Install dependencies
-Make sure you are using Python 3.8+, then run:
+Ensure you have Python 3.8+ installed, then run:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Run ```app.py```!
-
----
-## Dataset
-- [ASL Alphabet Dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet)
-- Over 87,000 RGB images (200x200)
-- 3000+ samples per letter (A–Z)
-
----
-## Project Structure
-```
-Sign-Language-Recognition/
-├── models/                 # Pretrained .pth files
-├── app.py                  
-├── requirements.txt        # Dependency list
-├── utils.py                
-└── README.md               
+### 3. Run app
+```bash
+python app.py --model models/final_model.pth --few_shot models/few_shot_data.pkl
 ```
 
----
-## License
-This project is open-source under the MIT License.
+## Using the Application
+
+### ASL Recognition
+When the app is running, it has recognition mode by default, using the webcam to detect and classify ASL gestures in real time.
+
+### Few-shot Learning Mode
+To add a new custom gesture:
+
+1. Press 'n' while the app is running
+2. Enter the label for the new gesture when prompted (e.g., "UwU")
+3. Perform the gesture within the green rectangle
+4. Press 'c' to capture a sample (repeat 3–5 times)
+5. Once enough samples are captured, the app automatically returns to recognition mode and can now recognize your custom gesture
+
+## How Few-shot Learning Works?
+
+This project uses a two-stage classification process:
+
+1. **Feature Extraction**: EfficientNet-B0 backbone, pre-trained on ImageNet and fine-tuned on the ASL dataset, extracts high-level features from hand gestures.
+
+2. **Classification**:
+   - Standard ASL: A fully-connected layer classifies into one of the 26 alphabet classes.
+   - Custom Gestures: A K-Nearest Neighbors (KNN) classifier compares the feature embeddings with stored custom gesture samples.
+
+When a new gesture is added:
+1. The app captures 3–5 feature embeddings.
+2. These are added to the KNN model without retraining the CNN.
+3. During inference, predictions from both the standard classifier and the few-shot classifier are compared based on confidence scores.
