@@ -1,171 +1,236 @@
 import os
 import cv2
-import argparse
-from model import SLR
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+from PIL import Image, ImageTk
 import mediapipe as mp
 import numpy as np
+from model import SLR
 
-# Mediapipe hands setup
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
+WINDOW_WIDTH = 1024
+WINDOW_HEIGHT = 768
+VIDEO_WIDTH = 800
+VIDEO_HEIGHT = 600
+
+MODEL_PATH = 'models/best_model_asl.pth'
+FEW_SHOT_PATH = 'models/few_shot_data.pkl'
+
 
 class SLRApp:
-    def __init__(self, model_path, few_shot_path=None):
-        self.model_path = model_path
-        self.few_shot_path = few_shot_path
-        self.model = SLR()
+    def __init__(self, root):
+        self.root = root
+        self.root.title("SLR App")
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.resizable(False, False)
 
-        # Assume the model exists
-        if os.path.exists(model_path):
-            print(f"Loading model from {model_path}")
-            self.model.load(model_path, few_shot_path)
-        else:
-            raise FileNotFoundError(f"Pre-trained model not found at: {model_path}")
+        # MediaPipe Hand
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+            model_complexity=0
+        )
 
-        # A-Z + 'del', 'nothing', 'space'
+        # Load model
+        try:
+            self.model = SLR()
+            if os.path.exists(MODEL_PATH):
+                print(f"Loading model from {MODEL_PATH}")
+                self.model.load(MODEL_PATH, FEW_SHOT_PATH)
+            else:
+                print(f"Warning: Model not found at {MODEL_PATH}")
+                self.model = None
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            self.model = None
+
+        # A-Z + other symbol
         self.classes = {i: chr(65 + i) for i in range(26)}
-        self.classes[26] = 'del'
-        self.classes[27] = 'nothing'
-        self.classes[28] = 'space'
+        self.classes.update({26: 'del', 27: 'nothing', 28: 'space'})
 
+        # Few-shot collection state
         self.is_collecting = False
-        self.current_few_shot_label = None
-        self.collected_samples = 0
-        self.required_samples = 5
+        self.current_label = None
+        self.collected = 0
+        self.required = 5
+        self.latest_roi = None
 
-    def preprocess_frame(self, frame):
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.setup_camera()
 
-    def run(self):
-        cap = cv2.VideoCapture(0)
+        self.setup_ui()
 
-        with mp_hands.Hands(
-                static_image_mode=False,
-                max_num_hands=1,
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-        ) as hands:
-            while cap.isOpened():
-                ret, frame = cap.read()
+        self.update_frame()
 
-                if not ret:
-                    break
+    def setup_camera(self):
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
 
-                h, w = frame.shape[:2]
-                frame = cv2.flip(frame, 1)
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = hands.process(rgb_frame)
+    def setup_ui(self):
+        main_frame = tk.Frame(self.root)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
 
-                roi = None
-                if results.multi_hand_landmarks:
-                    hand_landmarks = results.multi_hand_landmarks[0]
-                    h, w = frame.shape[:2]
+        self.video_frame = tk.Frame(main_frame, width=VIDEO_WIDTH, height=VIDEO_HEIGHT)
+        self.video_frame.pack(pady=10)
+        self.video_frame.pack_propagate(False)
 
-                    # Center of hand
-                    cx = int(np.mean([lm.x for lm in hand_landmarks.landmark]) * w)
-                    cy = int(np.mean([lm.y for lm in hand_landmarks.landmark]) * h)
+        self.canvas = tk.Canvas(self.video_frame, bg="black", width=VIDEO_WIDTH, height=VIDEO_HEIGHT)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
 
-                    roi_size = 300
-                    x1 = max(cx - roi_size // 2, 0)
-                    y1 = max(cy - roi_size // 2, 0)
-                    x2 = min(cx + roi_size // 2, w)
-                    y2 = min(cy + roi_size // 2, h)
+        self.status_var = tk.StringVar(value="Ready")
+        status_frame = tk.Frame(main_frame, relief=tk.SUNKEN, bd=1)
+        status_frame.pack(fill=tk.X, pady=10)
 
-                    # Draw ROI bounding box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        status_label = tk.Label(status_frame, textvariable=self.status_var, anchor=tk.W, padx=10, pady=5)
+        status_label.pack(fill=tk.X)
 
-                    roi = frame[y1:y2, x1:x2]
+        button_frame = tk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=10)
 
-                if roi is not None and roi.size > 0:
-                    processed_roi = self.preprocess_frame(roi)
+        self.btn_add = tk.Button(button_frame, text="Add New Gesture",
+                                 command=self.add_new_gesture, padx=20, pady=10)
+        self.btn_add.pack(side=tk.LEFT, padx=(0, 10))
 
-                    if self.is_collecting:
-                        cv2.putText(frame,
-                                    f"Collecting for '{self.current_few_shot_label}': {self.collected_samples}/{self.required_samples}",
-                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        self.btn_capture = tk.Button(button_frame, text="Capture Sample",
+                                     command=self.capture_sample, padx=20, pady=10, state=tk.DISABLED)
+        self.btn_capture.pack(side=tk.LEFT)
 
-                        if cv2.waitKey(1) & 0xFF == ord('c'):
-                            self.model.add_few_shot_sample(processed_roi, self.current_few_shot_label)
-                            self.collected_samples += 1
-                            print(f"Collected sample {self.collected_samples}/{self.required_samples}")
+        self.btn_quit = tk.Button(button_frame, text="Quit",
+                                  command=self.quit_app, padx=20, pady=10)
+        self.btn_quit.pack(side=tk.RIGHT)
 
-                            if self.collected_samples >= self.required_samples:
-                                print(f"Few-shot learning complete for '{self.current_few_shot_label}'")
-                                self.is_collecting = False
-                                self.current_few_shot_label = None
-                                self.collected_samples = 0
+    def add_new_gesture(self):
+        label = simpledialog.askstring("New Gesture", "Enter label for new gesture:", parent=self.root)
+        if label:
+            label = label.strip()
+            if label:
+                self.is_collecting = True
+                self.current_label = label
+                self.collected = 0
+                self.btn_capture.config(state=tk.NORMAL)
+                self.status_var.set(f"Ready to collect samples for '{label}'. Press 'Capture Sample' when ready.")
 
-                                if self.few_shot_path:
-                                    self.model.save(self.model_path, self.few_shot_path)
-                                    print(f"Few-shot data saved to {self.few_shot_path}")
-                    else:
-                        result = self.model.predict(processed_roi)
+    def capture_sample(self):
+        if not self.is_collecting or self.latest_roi is None:
+            return
 
-                        label = result['label']
-                        confidence = result['confidence']
-                        source = result['source']
+        try:
+            self.model.add_few_shot_sample(self.latest_roi, self.current_label)
+            self.collected += 1
 
-                        if label is None or confidence < 0.3:
-                            cv2.putText(frame, "No gesture detected", (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        elif source == 'few-shot':
-                            cv2.putText(frame, f"Detected: {label} ({confidence:.2f})", (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                        else:
-                            letter = self.classes.get(label, f"Class {label}")
-                            cv2.putText(frame, f"Detected: {letter} ({confidence:.2f})", (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            self.status_var.set(f"Collected {self.collected}/{self.required} for '{self.current_label}'")
 
-                def draw_text_with_background(img, text, position, font, scale, text_color, bg_color, thickness=1, padding=5):
-                    text_size, _ = cv2.getTextSize(text, font, scale, thickness)
-                    x, y = position
-                    cv2.rectangle(img, (x - padding, y - text_size[1] - padding),
-                                  (x + text_size[0] + padding, y + padding), bg_color, -1)
-                    cv2.putText(img, text, (x, y), font, scale, text_color, thickness)
+            if self.collected >= self.required:
+                if self.model and (os.path.exists(FEW_SHOT_PATH) or FEW_SHOT_PATH):
+                    self.model.save(MODEL_PATH, FEW_SHOT_PATH)
+                    print(f"Few-shot data saved to {FEW_SHOT_PATH}")
 
-                # Texts in console
-                draw_text_with_background(frame, "Press 'Q' to quit", (10, h - 60),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), (192, 216, 136))
+                label = self.current_label
+                self.is_collecting = False
+                self.current_label = None
+                self.collected = 0
+                self.btn_capture.config(state=tk.DISABLED)
 
-                draw_text_with_background(frame, "Press 'N' to add a new gesture", (10, h - 35),
-                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), (192, 216, 136))
+                messagebox.showinfo("Success. ", f"Added gesture '{label}' successfully!")
+                self.status_var.set("Ready")
+        except Exception as e:
+            print(f"Error capturing sample: {e}")
+            messagebox.showerror("Error", f"Failed to capture sample: {str(e)}")
+
+    def update_frame(self):
+        ret, frame = self.cap.read()
+        if ret:
+            frame = cv2.flip(frame, 1)  # Mirror view
+            display_frame = frame.copy()
+
+            self.process_hands(frame, display_frame)
+
+            display_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(display_frame)
+            img = img.resize((VIDEO_WIDTH, VIDEO_HEIGHT), Image.LANCZOS)
+
+            self.photo = ImageTk.PhotoImage(image=img)
+            self.canvas.create_image(0, 0, image=self.photo, anchor=tk.NW)
+
+        self.root.after(15, self.update_frame)
+
+    def process_hands(self, frame, display_frame):
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb_frame)
+
+        if results.multi_hand_landmarks:
+            h, w, _ = frame.shape
+            hand_landmarks = results.multi_hand_landmarks[0]
+
+            points_x = [lm.x for lm in hand_landmarks.landmark]
+            points_y = [lm.y for lm in hand_landmarks.landmark]
+            center_x = int(np.mean(points_x) * w)
+            center_y = int(np.mean(points_y) * h)
+
+            roi_size = 300
+            x1 = max(0, center_x - roi_size // 2)
+            y1 = max(0, center_y - roi_size // 2)
+            x2 = min(w, center_x + roi_size // 2)
+            y2 = min(h, center_y + roi_size // 2)
+
+            cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+            roi = frame[y1:y2, x1:x2]
+            if roi.size > 0:
+                self.latest_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
 
                 if self.is_collecting:
-                    draw_text_with_background(frame, "Press 'C' to capture sample", (10, h - 10),
-                                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), (0, 128, 128))
+                    self.display_collection_status(display_frame)
+                elif self.model:
+                    self.predict_gesture(display_frame)
 
-                cv2.imshow('SLR App', frame)
+    def display_collection_status(self, frame):
+        text = f"Collecting '{self.current_label}': {self.collected}/{self.required}"
+        cv2.putText(frame, text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (0, 0, 255), 2)
 
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                elif key == ord('n') and not self.is_collecting:
-                    label = input("Enter a label for the new gesture: ")
-                    if label:
-                        self.is_collecting = True
-                        self.current_few_shot_label = label
-                        self.collected_samples = 0
+    def predict_gesture(self, frame):
+        try:
+            prediction = self.model.predict(self.latest_roi)
 
-        cap.release()
-        cv2.destroyAllWindows()
+            if prediction:
+                label = prediction.get('label')
+                confidence = prediction.get('confidence', 0)
+                source = prediction.get('source', '')
 
-        if self.few_shot_path:
-            self.model.save(self.model_path, self.few_shot_path)
-            print(f"Few-shot data saved to {self.few_shot_path}")
+                if not label or confidence < 0.3:
+                    status = "No gesture detected"
+                else:
+                    display_label = label if source == 'few-shot' else self.classes.get(label, str(label))
+                    status = f"{display_label} ({confidence:.2f})"
+
+                if source == 'few-shot':
+                    color = (255, 0, 0)
+                elif status == 'No gesture detected':
+                    color = (0, 0, 255)
+                else:
+                    color = (0, 255, 0)
+
+                cv2.putText(frame, f"Detected: {status}", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        except Exception as e:
+            print(f"Error in prediction: {e}")
+
+    def quit_app(self):
+        """Clean up and exit application"""
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        self.hands.close()
+        self.root.destroy()
+
 
 def main():
-    parser = argparse.ArgumentParser(description='ASL Recognition with Few-Shot Learning')
-    parser.add_argument('--model', type=str, default='models/best_model_asl.pth',
-                        help='Path to the pre-trained model')
-    parser.add_argument('--few_shot', type=str, default='models/few_shot_data.pkl',
-                        help='Path to few-shot learning data')
-
-    args = parser.parse_args()
-    if not os.path.exists(args.model):
-        raise FileNotFoundError(f"Model file not found at: {args.model}")
-
-    app = SLRApp(args.model, args.few_shot)
-    app.run()
+    root = tk.Tk()
+    app = SLRApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":

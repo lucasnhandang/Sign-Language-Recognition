@@ -1,11 +1,11 @@
 torch
 torchvision
+timm
 numpy
-opencv-python
-mediapipe
-pillow
 matplotlib
 seaborn
 scikit-learn
+Pillow
+opencv-python
+mediapipe
 tqdm
-timm

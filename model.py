@@ -3,11 +3,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, classification_report
 from torchvision import transforms
+from torch.optim import lr_scheduler
 from PIL import Image
 import timm
+import string
+import seaborn as sns
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
 import pickle
 
 NUM_CLASSES = 29
@@ -157,9 +162,16 @@ class SLR:
 
         # Few-shot KNN prediction
         few_shot_pred = self.knn.predict([features])[0]
-        distances, _ = self.knn.kneighbors([features], n_neighbors=min(3, len(self.knn.n_samples_)))
-        similarities = 1 - distances[0]
-        avg_similarity = float(np.mean(similarities))
+        
+        total_samples = sum(len(emb_list) for emb_list in self.few_shot_embeddings.values())
+        n_neighbors = min(5, total_samples)  
+        
+        if n_neighbors > 0:  
+            distances, _ = self.knn.kneighbors([features], n_neighbors=n_neighbors)
+            similarities = 1 - distances[0]
+            avg_similarity = float(np.mean(similarities))
+        else:
+            avg_similarity = 0.0
 
         # Compare and select best source
         if avg_similarity > confidence_threshold and avg_similarity > standard_confidence:
